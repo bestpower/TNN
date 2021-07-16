@@ -13,6 +13,7 @@
 // specific language governing permissions and limitations under the License.
 
 #include "tnn/network/tensorrt/layer_builder/tensorrt_layer_builder.h"
+#include "tnn/network/tensorrt/utils.h"
 
 namespace TNN_NS {
 
@@ -111,7 +112,20 @@ ILayer* InnerProductTRTLayerBuilder::AddToNetwork(INetworkDefinition* network) {
         }
     }
 
-    IFullyConnectedLayer* layer = network->addFullyConnected(*input_tensor, paramlist->num_output,
+    ILayer* layer;
+
+    Dims in_dims;
+    in_dims.nbDims = 4;
+    in_dims.d[0] = -1;
+    in_dims.d[1] = kernelWeights.count / paramlist->num_output;
+    in_dims.d[2] = 1;
+    in_dims.d[3] = 1;
+    IShuffleLayer* in_reshape_layer = network->addShuffle(*input_tensor);
+    in_reshape_layer->setReshapeDimensions(in_dims);
+    input_tensor = in_reshape_layer->getOutput(0);
+
+    //FullyConnected
+    layer = network->addFullyConnected(*input_tensor, paramlist->num_output, 
         kernelWeights, biasWeights);
     if (int8) {
         layer->setInput(1, *(weight_layer->getOutput(0)));
@@ -120,7 +134,18 @@ ILayer* InnerProductTRTLayerBuilder::AddToNetwork(INetworkDefinition* network) {
 
     if (layer != nullptr) {
         layer->setName(layer_name_.c_str());
+        input_tensor = layer->getOutput(0);
     }
+
+    Dims out_dims;
+    out_dims.nbDims = paramlist->axis + 1;
+    for (int i = 0; i < out_dims.nbDims; i++) {
+        out_dims.d[i] = 0;
+    }
+    IShuffleLayer* out_reshape_layer = network->addShuffle(*input_tensor);
+    out_reshape_layer->setReshapeDimensions(out_dims);
+    input_tensor = out_reshape_layer->getOutput(0);
+    layer = out_reshape_layer;
 
     if (int8) {
         float output_scale_value = std::dynamic_pointer_cast<TensorRTTensor>(

@@ -18,6 +18,7 @@
 #include <iostream>
 #include <unordered_set>
 #include <cuda_runtime.h>
+#include <thread>
 
 #include "tnn/core/default_network.h"
 #include "tnn/network/tensorrt/layer_builder/tensorrt_layer_builder.h"
@@ -29,9 +30,24 @@ namespace TNN_NS {
 
 class TRTLogger : public nvinfer1::ILogger {
 public:
-    void log(nvinfer1::ILogger::Severity severity, const char* msg) override {
+    void log(nvinfer1::ILogger::Severity severity, const char* msg) noexcept override {
         // suppress info-level messages
+#ifndef DEBUG
         if (severity == Severity::kINFO || severity == Severity::kVERBOSE) return;
+#endif
+        const char * skips[] = {
+            "INVALID_ARGUMENT: Cannot find binding of given name",
+            "Unused Input:",
+            "Detected invalid timing cache",
+            "unused or used only at compile-time",
+        };
+
+        std::string msg_str = std::string(msg);
+        for(auto skip : skips) {
+            if (msg_str.find(skip) != std::string::npos) {
+                return;
+            }
+        }
         switch (severity) {
             case Severity::kINTERNAL_ERROR: std::cerr << "INTERNAL_ERROR: "; break;
             case Severity::kERROR: std::cerr << "ERROR: "; break;
@@ -46,7 +62,7 @@ public:
 
 class TensorRTPluginLayerBuilder;
 
-class TensorRTNetwork_ : public DefaultNetwork {
+class TensorRTNetwork_ : public DefaultNetwork, public ISharedMemoryChangeListener {
 public:
     // @brief TensorRTNetwork_ Constructor
     TensorRTNetwork_();
@@ -61,8 +77,8 @@ public:
     // @param inputs_shape_map modify input shape, if empty, it will use the
     // shape in proto
     virtual Status Init(NetworkConfig &net_config, ModelConfig &model_config,
-                        AbstractModelInterpreter* interpreter,
-                        InputShapesMap inputs_shape);
+        AbstractModelInterpreter* interpreter, InputShapesMap min_inputs_shape,
+        InputShapesMap max_inputs_shape, bool enable_const_folder);
 
     // @brief network forward
     virtual Status Forward();
@@ -74,17 +90,38 @@ public:
     // @brief tnn instance network infer, it will not wait
     virtual Status ForwardAsync(Callback call_back);
 
+    // @brief OnSharedForwardMemoryChanged for share memory change observer
+    virtual void OnSharedForwardMemoryChanged(void *memory);
+
+    // @brief get network forward for all blob memory size
+    virtual Status GetForwardMemorySize(int &memory_size);
+
+    // @brief set forward memory when share memory mode is set from external
+    virtual Status SetForwardMemory(void *memory);
+
     static std::unordered_map<std::string, TensorRTPluginLayerBuilder*> GetPluginLayerNameMap();
 
-    std::string GetCacheFileName(std::string cfg, std::string model, BlobMap input_map,
-        BlobMap output_map, int device_id, int batchsize, bool int8_mode, bool use_fp16);
+    std::string GetCacheFileName(std::vector<std::string> params_md5, BlobMap input_map,
+        BlobMap output_map, const InputShapesMap &min_inputs_shape, int device_id, int batchsize,
+        bool int8_mode, bool use_fp16, bool enable_const_folder);
+
+    std::set<std::string> m_concat_blob_names;
 
 private:
-    virtual Status InitLayers(NetStructure *net_structure, NetResource *net_resource);
+    virtual Status InitLayers(NetStructure *net_structure, NetResource *net_resource, bool enable_const_folder);
 
-    Status InitWithoutCache(BlobMap &inputs, BlobMap &outputs, std::string cache_file_name);
+    bool IsBlobUsed(Blob* blob);
+
+    Status InitWithoutCache(BlobMap &inputs, BlobMap &outputs, std::string cache_file_name,
+        NetResource *net_resource, const InputShapesMap &min_inputs_shape);
 
     Status CreateExecuteContext();
+
+    Status ReshapeLayers();
+
+    Status DumpAllOutputBlob();
+
+    Status CheckConstBlobs();
 
     bool int8_mode;
     bool test_mode;
@@ -93,10 +130,20 @@ private:
     nvinfer1::IExecutionContext* m_trt_context;
     TRTLogger m_trt_logger;
     std::unordered_map<std::string, std::shared_ptr<nvinfer1::ITensor>> m_blob_tensor_map;
-    static std::unordered_map<std::string, TensorRTPluginLayerBuilder*> m_plugin_layer_name_map;
     std::unordered_set<nvinfer1::ITensor *> m_tensor_set;
     void** m_trt_bindings;
     void* m_context_memory;
+    NetResource *net_resource_;
+    int device_id_;
+    size_t context_memory_size_;
+
+    std::thread::id init_thread_id_;
+
+    std::vector<std::string> const_input_blobs_;
+    std::vector<std::string> const_weight_blobs_;
+
+    static std::unordered_map<std::string, TensorRTPluginLayerBuilder*> m_plugin_layer_name_map;
+    static std::mutex network_mutex;
 };
 
 }  //  namespace TNN_NS

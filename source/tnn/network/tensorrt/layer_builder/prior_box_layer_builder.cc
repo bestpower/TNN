@@ -19,25 +19,49 @@ namespace TNN_NS {
 DECLARE_TENSORRT_PLUGIN_LAYER_BUILDER(PriorBox, LAYER_PRIOR_BOX);
 
 bool PriorBoxTRTPluginLayerBuilder::supportsFormatCombination(
-        int pos, const nvinfer1::PluginTensorDesc* inOut, int nbInputs, int nbOutputs) {
-    return ((inOut[pos].type == nvinfer1::DataType::kFLOAT) && inOut[pos].format == nvinfer1::TensorFormat::kNCHW
+        int pos, const nvinfer1::PluginTensorDesc* inOut, int nbInputs, int nbOutputs) noexcept {
+    return ((inOut[pos].type == nvinfer1::DataType::kFLOAT) && inOut[pos].format == nvinfer1::TensorFormat::kLINEAR
         && inOut[pos].type == inOut[0].type);
 }
 
-const char* PriorBoxTRTPluginLayerBuilder::getPluginType() const {
+Status PriorBoxTRTPluginLayerBuilder::Reshape() {
+    return TNN_OK;
+}
+
+const char* PriorBoxTRTPluginLayerBuilder::getPluginType() const noexcept {
     return "PriorBox";
 }
 
 nvinfer1::DataType PriorBoxTRTPluginLayerBuilder::getOutputDataType(int index, const nvinfer1::DataType* inputTypes,
-        int nbInputs) const {
+        int nbInputs) const noexcept {
     return inputTypes[0];
 }
 
-ILayer* PriorBoxTRTPluginLayerBuilder::AddToNetwork(INetworkDefinition* network) {
+ILayer* PriorBoxTRTPluginLayerBuilder::AddToNetwork(INetworkDefinition* network) noexcept {
     return TensorRTPluginLayerBuilder::AddToNetwork(network);
 }
 
-const char* PriorBoxPluginCreator::getPluginName() const {
+DimsExprs PriorBoxTRTPluginLayerBuilder::getOutputDimensions(int index, const nvinfer1::DimsExprs* inputs,
+        int nbInputs, nvinfer1::IExprBuilder& exprBuilder) noexcept {
+    PriorBoxLayerParam* param = dynamic_cast<PriorBoxLayerParam *>(param_);
+    int num_priors = static_cast<int>(param->aspect_ratios.size() * param->min_sizes.size());
+    if (!param->max_sizes.empty()) {
+        for (int i = 0; i < param->max_sizes.size(); ++i) {
+            ASSERT(param->max_sizes[i] > param->min_sizes[i]);
+            num_priors++;
+        }
+    }
+    DimsExprs output(inputs[0]);
+    output.d[0] = exprBuilder.constant(1);
+    output.d[1] = exprBuilder.constant(2);
+    auto four = exprBuilder.constant(4 * num_priors);
+    output.d[2] = exprBuilder.operation(DimensionOperation::kPROD, *inputs[0].d[2], *inputs[0].d[3]);
+    output.d[2] = exprBuilder.operation(DimensionOperation::kPROD, *output.d[2], *four);
+    output.d[3] = exprBuilder.constant(1);
+    return output;
+}
+
+const char* PriorBoxPluginCreator::getPluginName() const noexcept {
     return "PriorBox";
 }
 

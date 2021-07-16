@@ -42,6 +42,8 @@ public:
 
     virtual Status Free(void* handle);
 
+    virtual std::shared_ptr<const ImplementedLayout> GetImplementedLayout(LayerType type);
+
     virtual Status CopyToDevice(BlobHandle* dst, const BlobHandle* src, BlobDesc& desc,
                                 void* command_queue);
 
@@ -52,9 +54,12 @@ public:
 
     virtual Context *CreateContext(int device_id);
 
+    virtual NetworkType ConvertAutoNetworkType();
+
     static Status RegisterLayerAccCreator(LayerType type, LayerAccCreator* creator);
 
 private:
+    BlobMemorySizeInfo Calculate1DMemorySize(BlobDesc& desc);
     static std::map<LayerType, std::shared_ptr<LayerAccCreator>> &GetLayerCreatorMap();
 };
 

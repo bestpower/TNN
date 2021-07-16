@@ -24,6 +24,7 @@
 #include "NvUtils.h"
 #include "NvInferPlugin.h"
 
+#include "tnn/core/macro.h"
 #include "tnn/layer/base_layer.h"
 #include "tnn/core/abstract_device.h"
 #include "tnn/core/blob.h"
@@ -32,6 +33,7 @@
 #include "tnn/core/status.h"
 #include "tnn/interpreter/layer_param.h"
 #include "tnn/interpreter/layer_resource.h"
+#include "tnn/network/tensorrt/shape_tensor.h"
 #include "tnn/network/tensorrt/tensorrt_tensor.h"
 #include "tnn/extern_wrapper/base_layer_builder.h"
 #include "tnn/extern_wrapper/foreign_blob.h"
@@ -40,6 +42,8 @@ using namespace nvinfer1;
 using namespace plugin;
 
 namespace TNN_NS {
+
+class TensorRTNetwork_;
 
 // @brief BaseLayer Builder, defines the layer builder interface
 class TensorRTBaseLayerBuilder: public BaseLayerBuilder {
@@ -51,7 +55,7 @@ public:
 
     // @brief virtual layer init
     virtual Status Init(Context* context, LayerParam* param, LayerResource* resource, std::vector<Blob*>& inputs,
-                std::vector<Blob*>& outputs, AbstractDevice* device) = 0;
+            std::vector<Blob*>& outputs, AbstractDevice* device, bool enable_const_folder=true) = 0;
 
     // @brief virtual Reshape recalculate the output tensor dims
     virtual Status Reshape();
@@ -71,6 +75,12 @@ public:
     // @brief set tensorRT batchsize
     void SetBatchSize(int value);
 
+    // @brief set constant resource
+    virtual void SetConstantResource(ConstantResource* consts);
+
+    // @brief set tensorrt_network
+    void SetNetwork(TensorRTNetwork_ *network);
+
 protected:
     // @brief Build the foreign network
     virtual Status Build();
@@ -82,10 +92,16 @@ protected:
         nvinfer1::Weights kernelWeights, RawBuffer* bias, nvinfer1::Weights biasWeights,
         float scale, std::vector<int> dims);
 
+    std::vector<ITensor*> GetInputITensors();
+
+    std::vector<ITensor*> GetOutputITensors();
+
     std::shared_ptr<BaseLayer> m_layer;
     std::vector<float*> int8_weight_data;
     bool is_plugin;
     int trt_batchsize;
+
+    TensorRTNetwork_* m_network;
 };
 
 class TensorRTLayerBuilder;

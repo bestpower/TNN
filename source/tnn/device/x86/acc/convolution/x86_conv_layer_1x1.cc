@@ -75,18 +75,21 @@ Status X86ConvLayer1x1::DoForward(const std::vector<Blob *> &inputs, const std::
     int n = src_z_step;
     int k = dims_input[1];
 
+    int max_num_threads = OMP_MAX_THREADS_NUM_;
+    conv_ajust_m_blk_size(max_num_threads, src_z_step, conv_gemm_conf_.M_c_);
+
     int m_c = conv_gemm_conf_.M_c_;
     int k_c = conv_gemm_conf_.K_c_;
 
     float *src_buf = reinterpret_cast<float *>(
-        context_->GetSharedWorkSpace(m_c * k_c * sizeof(float)));
+        context_->GetSharedWorkSpace(m_c * k_c * max_num_threads * sizeof(float)));
 
     for (int batch_idx = 0; batch_idx < batch; batch_idx++) {
         const float * B = src_origin + batch_idx * k * n;
         const float * A = weights_data;
         float * C = dst_origin + batch_idx * m * n;
 
-        conv_sgemm_nn_col_major(n, m, k, B, n, A, k, C, n,
+        conv_sgemm_nn_col_major_prepack_b(n, m, k, B, n, A, k, C, n,
             bias_data, param->activation_type, src_buf, conv_gemm_conf_);
     }
 

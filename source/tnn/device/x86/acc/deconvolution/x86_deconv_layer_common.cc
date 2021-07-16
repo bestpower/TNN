@@ -67,7 +67,7 @@ Status X86DeconvLayerCommon::allocateBufferWeight(const std::vector<Blob *> &inp
                 auto src_g = src + K * M * g;
                 MatTranspose(trans, src_g, K, M);
                 auto dst_g = dst + weight_pack_per_group * g;
-                conv_pack_weights(M, K, trans, K, dst_g, conv_gemm_conf_);
+                conv_pack_col_b_n(M, K, trans, K, dst_g, conv_gemm_conf_);
             }
 
             temp_buffer.SetDataType(DATA_TYPE_FLOAT);
@@ -150,13 +150,16 @@ Status X86DeconvLayerCommon::DoForward(const std::vector<Blob *> &inputs, const 
     size_t col_offset_ =
         param->kernels[0] * param->kernels[1] * input_dims[2] * input_dims[3] * (output_dims[1] / param->group);
 
+    int max_num_threads = OMP_MAX_THREADS_NUM_;
+    conv_ajust_m_blk_size(max_num_threads, conv_in_spatial_dim_, conv_gemm_conf_.M_c_);
+
     int m_c               = conv_gemm_conf_.M_c_;
     int k_c               = conv_gemm_conf_.K_c_;
     int n_block           = conv_gemm_conf_.n_block_;
     size_t src_trans_size = m_c * k_c;
 
     size_t im2col_size    = ROUND_UP(col_offset_ * param->group * sizeof(float), 32);
-    size_t workspace_size = (im2col_size + ROUND_UP(src_trans_size * sizeof(float), 32));
+    size_t workspace_size = (im2col_size + ROUND_UP(src_trans_size * max_num_threads * sizeof(float), 32));
     float *workspace      = reinterpret_cast<float *>(context_->GetSharedWorkSpace(workspace_size));
 
     float *im2col_workspace    = workspace;
@@ -176,7 +179,7 @@ Status X86DeconvLayerCommon::DoForward(const std::vector<Blob *> &inputs, const 
         RawBuffer fake_bias(ROUND_UP(M, 8) * sizeof(float));
         for (size_t b = 0; b < output_dims[0]; b++) {
             for (int g = 0; g < param->group; g++) {
-                conv_sgemm_nn_col_major(N, M, K, input_data + (b * param->group + g) * input_offset_, N,
+                conv_sgemm_nn_col_major_prepack_b(N, M, K, input_data + (b * param->group + g) * input_offset_, N,
                                         weights_data + weight_offset_per_group * g, K,
                                         im2col_workspace + col_offset_ * g, N, fake_bias.force_to<float *>(), 0,
                                         src_trans_workspace, conv_gemm_conf_);

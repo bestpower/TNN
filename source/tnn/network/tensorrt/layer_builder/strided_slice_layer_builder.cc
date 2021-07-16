@@ -19,25 +19,48 @@ namespace TNN_NS {
 DECLARE_TENSORRT_PLUGIN_LAYER_BUILDER(StrideSlice, LAYER_STRIDED_SLICE);
 
 bool StrideSliceTRTPluginLayerBuilder::supportsFormatCombination(
-        int pos, const nvinfer1::PluginTensorDesc* inOut, int nbInputs, int nbOutputs) {
-    return ((inOut[pos].type == nvinfer1::DataType::kFLOAT) && inOut[pos].format == nvinfer1::TensorFormat::kNCHW
+        int pos, const nvinfer1::PluginTensorDesc* inOut, int nbInputs, int nbOutputs) noexcept {
+    return ((inOut[pos].type == nvinfer1::DataType::kFLOAT) && inOut[pos].format == nvinfer1::TensorFormat::kLINEAR
         && inOut[pos].type == inOut[0].type);
 }
 
-const char* StrideSliceTRTPluginLayerBuilder::getPluginType() const {
+Status StrideSliceTRTPluginLayerBuilder::Reshape() {
+    return TNN_OK;
+}
+
+const char* StrideSliceTRTPluginLayerBuilder::getPluginType() const noexcept {
     return "StrideSlice";
 }
 
 nvinfer1::DataType StrideSliceTRTPluginLayerBuilder::getOutputDataType(int index, const nvinfer1::DataType* inputTypes,
-        int nbInputs) const {
+        int nbInputs) const noexcept {
     return inputTypes[0];
 }
 
-ILayer* StrideSliceTRTPluginLayerBuilder::AddToNetwork(INetworkDefinition* network) {
+ILayer* StrideSliceTRTPluginLayerBuilder::AddToNetwork(INetworkDefinition* network) noexcept {
     return TensorRTPluginLayerBuilder::AddToNetwork(network);
 }
 
-const char* StrideSlicePluginCreator::getPluginName() const {
+DimsExprs StrideSliceTRTPluginLayerBuilder::getOutputDimensions(int index, const nvinfer1::DimsExprs* inputs,
+        int nbInputs, nvinfer1::IExprBuilder& exprBuilder) noexcept {
+    StrideSliceLayerParam* param = dynamic_cast<StrideSliceLayerParam*>(param_);
+    auto begins  = param->begins;
+    auto ends    = param->ends;
+    auto strides = param->strides;
+    std::reverse(begins.begin(), begins.end());
+    std::reverse(ends.begin(), ends.end());
+    std::reverse(strides.begin(), strides.end());
+    DimsExprs output(inputs[0]);
+    if (nbInputs == 1) {
+        for (int i = 0; i < inputs[0].nbDims; i++) {
+            output.d[i] = exprBuilder.constant((ends[i] - begins[i] - 1) / strides[i] + 1);
+        }
+    }
+
+    return output;
+}
+
+const char* StrideSlicePluginCreator::getPluginName() const noexcept {
     return "StrideSlice";
 }
 

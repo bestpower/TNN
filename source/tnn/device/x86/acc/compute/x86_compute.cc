@@ -15,6 +15,8 @@
 #include "tnn/device/x86/acc/compute/x86_compute.h"
 #include "tnn/device/x86/acc/Float8.h"
 #include "tnn/device/x86/acc/Float4.h"
+#include "tnn/utils/naive_compute.h"
+#include "tnn/utils/omp_utils.h"
 
 #include <algorithm>
 #include <cstring>
@@ -528,15 +530,16 @@ template<> void reduce_postprocess<X86ReduceOpType::kLOGSUM>(float* input, float
 template<X86ReduceOpType type>
 void reduce_kernel(float * input, float * output, size_t outer_size, size_t inner_size, size_t reduce_size) 
 {
-    for(size_t outer_idx=0;outer_idx<outer_size;outer_idx++) {
-        for(size_t inner_idx=0;inner_idx<inner_size;inner_idx++) {
+    for(long outer_idx = 0; outer_idx < outer_size; outer_idx++) {
+        OMP_PARALLEL_FOR_GUIDED_
+        for(long inner_idx = 0; inner_idx < inner_size; inner_idx++) {
             float acc = 0;
             if (type == X86ReduceOpType::kMIN) {
                 acc = FLT_MAX;
             } else if (type == X86ReduceOpType::kMAX) {
                 acc = -FLT_MAX;
             }
-            for(int i=0;i<reduce_size;i++) {
+            for(int i = 0; i < reduce_size; i++) {
                 acc = reduce_iter_op<type>(acc, input[i * inner_size + inner_idx]);
             }
             output[inner_idx] = reduce_final_op<type>(acc, float(reduce_size));
@@ -790,13 +793,15 @@ void X86SgemvLeft(float* dst, const float* src, const float* weight, float *bias
 
 template <typename VEC, int pack>
 void X86Sgemv(float* dst, const float* src, const float* weight, float *bias, DimsVector dims_input, DimsVector dims_output) {
-    size_t batch_stride = dims_input[3] * dims_input[2] * dims_input[1];
+    size_t batch_stride = DimsVectorUtils::Count(dims_input, 1);
+    int oc_vec_size = dims_output[1] / pack * pack;
+    int oc_left = dims_output[1] - oc_vec_size;
     for (int b = 0; b < dims_output[0]; ++b) {
         const float *src_batch = src + b * batch_stride;
         float *dst_batch = dst + b * dims_output[1];
 
-        int oc = 0;
-        for (; oc + pack - 1 < dims_output[1]; oc += pack) {
+        OMP_PARALLEL_FOR_GUIDED_
+        for (int oc = 0; oc < oc_vec_size; oc += pack) {
             auto weight_oc = weight + oc * batch_stride;
             VEC acc = VEC::loadu(bias + oc);
             size_t ic = 0;
@@ -822,7 +827,8 @@ void X86Sgemv(float* dst, const float* src, const float* weight, float *bias, Di
             }
             VEC::saveu(dst_batch + oc, acc);
         }
-        int left = dims_output[1] - oc;
+        int left = oc_left;
+        int oc = oc_vec_size;
         if (pack == 8) {
             if (left == 7) {
                 X86SgemvLeft<7, pack>(dst_batch + oc, src_batch, weight + oc * batch_stride, bias + oc, batch_stride);
@@ -889,5 +895,103 @@ template void X86_Post_Exec<ActivationType_ReLU, Float8, 8>(float *dst, const fl
 template void X86_Post_Exec<ActivationType_ReLU6, Float8, 8>(float *dst, const float *bias, long channel, long area);
 
 //ActivationType_SIGMOID_MUL TBD
+
+template <typename VEC, int pack>
+void X86_VectorAdd(float *dst, const float *src_a, const float *src_b, long len) {
+    long i = 0;
+    for (; i + pack - 1 < len; i += pack) {
+        VEC a_vec = VEC::loadu(src_a + i);
+        VEC b_vec = VEC::loadu(src_b + i);
+        VEC c_vec = VEC::add(a_vec, b_vec);
+        VEC::saveu(dst + i, c_vec);
+    }
+    for (; i < len; i++) {
+        dst[i] = src_a[i] + src_b[i];
+    }
+}
+template void X86_VectorAdd<Float4, 4>(float *dst, const float *src_a, const float *src_b, long len);
+template void X86_VectorAdd<Float8, 8>(float *dst, const float *src_a, const float *src_b, long len);
+
+template <typename VEC, int pack>
+void X86_VectorAdd(float *dst, const float *src, long len) {
+    long i = 0;
+    for (; i + pack - 1 < len; i += pack) {
+        VEC a_vec = VEC::loadu(src + i);
+        VEC b_vec = VEC::loadu(dst + i);
+        VEC c_vec = VEC::add(a_vec, b_vec);
+        VEC::saveu(dst + i, c_vec);
+    }
+    for (; i < len; i++) {
+        dst[i] += src[i];
+    }
+}
+template void X86_VectorAdd<Float4, 4>(float *dst, const float *src, long len);
+template void X86_VectorAdd<Float8, 8>(float *dst, const float *src, long len);
+
+void X86StrideSliceImpl(DimsVector begins, DimsVector strides, DimsVector dims_output,
+                        DimsVector input_strides, DimsVector output_strides,
+                        const float* input_data, float* output_data) {
+    if (dims_output.size() == 5) {
+        for (int n = 0, n_idx = begins[0]; n < dims_output[0]; n++, n_idx += strides[0]) {
+            auto input_n = input_data + n_idx * input_strides[0];
+            auto output_n = output_data + n * output_strides[0];
+            for (int c = 0, c_idx = begins[1]; c < dims_output[1]; c++, c_idx += strides[1]) {
+                auto input_c = input_n + c_idx * input_strides[1];
+                auto output_c = output_n + c * output_strides[1];
+                for (int h = 0, h_idx = begins[2]; h < dims_output[2]; h++, h_idx += strides[2]) {
+                    auto input_h = input_c + h_idx * input_strides[2];
+                    auto output_h = output_c + h * output_strides[2];
+                    for (int w = 0, w_idx = begins[3]; w < dims_output[3]; w++, w_idx += strides[3]) {
+                        auto input_w = input_h + w_idx * input_strides[3];
+                        auto output_w = output_h + w * output_strides[3];
+                        for (int x = 0, x_idx = begins[4]; x < dims_output[4]; x++, x_idx += strides[4]) {
+                            output_w[x] = input_w[x_idx];
+                        }
+                    }
+                }
+            }
+        }
+    } else if (dims_output.size() == 4) {
+        for (int n = 0, n_idx = begins[0]; n < dims_output[0]; n++, n_idx += strides[0]) {
+            auto input_n = input_data + n_idx * input_strides[0];
+            auto output_n = output_data + n * output_strides[0];
+            for (int c = 0, c_idx = begins[1]; c < dims_output[1]; c++, c_idx += strides[1]) {
+                auto input_c = input_n + c_idx * input_strides[1];
+                auto output_c = output_n + c * output_strides[1];
+                for (int h = 0, h_idx = begins[2]; h < dims_output[2]; h++, h_idx += strides[2]) {
+                    auto input_h = input_c + h_idx * input_strides[2];
+                    auto output_h = output_c + h * output_strides[2];
+                    for (int w = 0, w_idx = begins[3]; w < dims_output[3]; w++, w_idx += strides[3]) {
+                        output_h[w] = input_h[w_idx];
+                    }
+                }
+            }
+        }
+    } else if (dims_output.size() == 3) {
+        for (int n = 0, n_idx = begins[0]; n < dims_output[0]; n++, n_idx += strides[0]) {
+            auto input_n = input_data + n_idx * input_strides[0];
+            auto output_n = output_data + n * output_strides[0];
+            for (int c = 0, c_idx = begins[1]; c < dims_output[1]; c++, c_idx += strides[1]) {
+                auto input_c = input_n + c_idx * input_strides[1];
+                auto output_c = output_n + c * output_strides[1];
+                for (int h = 0, h_idx = begins[2]; h < dims_output[2]; h++, h_idx += strides[2]) {
+                    output_c[h] = input_c[h_idx];
+                }
+            }
+        }
+    } else if (dims_output.size() == 2) {
+        for (int n = 0, n_idx = begins[0]; n < dims_output[0]; n++, n_idx += strides[0]) {
+            auto input_n = input_data + n_idx * input_strides[0];
+            auto output_n = output_data + n * output_strides[0];
+            for (int c = 0, c_idx = begins[1]; c < dims_output[1]; c++, c_idx += strides[1]) {
+                output_n[c] = input_n[c_idx];
+            }
+        }
+    } else if (dims_output.size() == 1) {
+        for (int n = 0, n_idx = begins[0]; n < dims_output[0]; n++, n_idx += strides[0]) {
+            output_data[n] = input_data[n_idx];
+        }
+    }
+}
 
 }

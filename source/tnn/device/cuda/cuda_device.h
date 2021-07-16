@@ -23,6 +23,9 @@ namespace TNN_NS {
 
 class CudaDevice : public AbstractDevice {
 public:
+
+    using AbstractDevice::Allocate;
+
     explicit CudaDevice(DeviceType device_type);
 
     ~CudaDevice();
@@ -35,6 +38,8 @@ public:
 
     Status Allocate(void** handle, size_t size);
 
+    Status ReAllocate(void** handle, size_t size);
+
     virtual Status Free(void* handle);
 
     virtual Status CopyToDevice(BlobHandle* dst, const BlobHandle* src, BlobDesc& desc, void* command_queue);
@@ -44,6 +49,8 @@ public:
     virtual AbstractLayerAcc* CreateLayerAcc(LayerType type);
 
     virtual Context* CreateContext(int device_id);
+
+    virtual NetworkType ConvertAutoNetworkType();
 
     static Status RegisterLayerAccCreator(LayerType type, LayerAccCreator* creator);
 

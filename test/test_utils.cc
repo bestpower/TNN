@@ -134,7 +134,8 @@ int CompareData(const float* ref_data, const float* result_data, size_t n, float
             sum_ref += ref_data[i] * ref_data[i];
             sum_dot += result_data[i] * ref_data[i];
         }
-        double cos_sim = sum_dot / (sqrt(sum_res) * sqrt(sum_ref));
+        // need to avoid sum_res or sum_ref is 0.0f
+        double cos_sim = sum_dot / ((sqrt(sum_res) + 1e-9f) * (sqrt(sum_ref) + 1e-9f));
         if (cos_sim < 0.9998f) {
             printf("ERROR COSINE SIMILARITY %.6f < 0.9998\n", cos_sim);
             return -1;
@@ -174,6 +175,17 @@ int CompareData(const uint8_t* ref_data, const uint8_t* result_data, int mat_cha
         if (c >= channel)
             continue;
         if (abs(result_data[i] - ref_data[i]) > 1) {
+            LOGE("ERROR AT %llu result %d ref %d\n", i, result_data[i], ref_data[i]);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int CompareData(const int* ref_data, const int* result_data, size_t n) {
+    for (unsigned long long i = 0; i < n; i++) {
+        if (result_data[i] - ref_data[i] != 0) {
             LOGE("ERROR AT %llu result %d ref %d\n", i, result_data[i], ref_data[i]);
             return -1;
         }

@@ -59,14 +59,16 @@ Status OpenCLConvLayer1x1Acc::Init(Context *context, LayerParam *param, LayerRes
     auto input_dims = inputs[0]->GetBlobDesc().dims;
     auto output_dims = outputs[0]->GetBlobDesc().dims;
 
-    const int input_channel     = input_dims[1];
-    const int output_batch      = output_dims[0];
-    const int output_channel    = output_dims[1];
-    const int output_height     = output_dims[2];
-    const int output_width      = output_dims[3];
+    const int input_channel     = DimsFunctionUtils::GetDim(input_dims, 1);
+    const int output_batch      = DimsFunctionUtils::GetDim(output_dims, 0);
+    const int output_channel    = DimsFunctionUtils::GetDim(output_dims, 1);
+    const int output_height     = DimsFunctionUtils::GetDim(output_dims, 2);
+    const int output_width      = DimsFunctionUtils::GetDim(output_dims, 3);
 
+    std::string program_name = "convolution_1x1";
     std::string kernel_name;
     if (run_3d_ndrange_) {
+        program_name += "_gws_3d";
         kernel_name = "Conv2D1x1GS3D";
     } else {
         kernel_name = "Conv2D1x1";
@@ -75,6 +77,7 @@ Status OpenCLConvLayer1x1Acc::Init(Context *context, LayerParam *param, LayerRes
         kernel_name += "_S1";
     }
     if (use_buffer_) {
+        program_name += "_mix";
         kernel_name += "_MIX";
     }
 
@@ -94,7 +97,7 @@ Status OpenCLConvLayer1x1Acc::Init(Context *context, LayerParam *param, LayerRes
         kernel_name += "_CB2";
     }
 
-    ret = CreateExecuteUnit(execute_units_[0], "convolution", kernel_name, build_options_);
+    ret = CreateExecuteUnit(execute_units_[0], program_name, kernel_name, build_options_);
     if (ret != TNN_OK) {
         LOGE("create execute unit failed!\n");
         return ret;
@@ -113,9 +116,9 @@ Status OpenCLConvLayer1x1Acc::Reshape(const std::vector<Blob *> &inputs, const s
     auto input_dims  = inputs[0]->GetBlobDesc().dims;
     auto output_dims = outputs[0]->GetBlobDesc().dims;
 
-    const int input_channel_blocks = UP_DIV(input_dims[1], 4);
+    const int input_channel_blocks = UP_DIV(DimsFunctionUtils::GetDim(input_dims, 1), 4);
 
-    const int output_channels = output_dims[1];
+    const int output_channels = DimsFunctionUtils::GetDim(output_dims, 1);
     const int output_channel_blocks = UP_DIV(output_channels, 4);
 
     int type_size = sizeof(float);
@@ -127,13 +130,17 @@ Status OpenCLConvLayer1x1Acc::Reshape(const std::vector<Blob *> &inputs, const s
 
     if (run_3d_ndrange_) {
         if (is_channel_blocking_) {
-            execute_units_[0].global_work_size = {static_cast<uint32_t>(UP_DIV(output_dims[1], 8)),
-                                                  static_cast<uint32_t>(UP_DIV(output_dims[3], 4)),
-                                                  static_cast<uint32_t>(output_dims[0] * output_dims[2])};
+            execute_units_[0].global_work_size = {
+                static_cast<uint32_t>(UP_DIV(DimsFunctionUtils::GetDim(output_dims, 1), 8)),
+                static_cast<uint32_t>(UP_DIV(DimsFunctionUtils::GetDim(output_dims, 3), 4)),
+                static_cast<uint32_t>(DimsFunctionUtils::GetDim(output_dims, 0) *
+                                      DimsFunctionUtils::GetDim(output_dims, 2))};
         } else {
-            execute_units_[0].global_work_size = {static_cast<uint32_t>(UP_DIV(output_dims[1], 4)),
-                                                  static_cast<uint32_t>(UP_DIV(output_dims[3], 4)),
-                                                  static_cast<uint32_t>(output_dims[0] * output_dims[2])};
+            execute_units_[0].global_work_size = {
+                static_cast<uint32_t>(UP_DIV(DimsFunctionUtils::GetDim(output_dims, 1), 4)),
+                static_cast<uint32_t>(UP_DIV(DimsFunctionUtils::GetDim(output_dims, 3), 4)),
+                static_cast<uint32_t>(DimsFunctionUtils::GetDim(output_dims, 0) *
+                                      DimsFunctionUtils::GetDim(output_dims, 2))};
         }
 
         execute_units_[0].local_work_size =
@@ -150,20 +157,27 @@ Status OpenCLConvLayer1x1Acc::Reshape(const std::vector<Blob *> &inputs, const s
                 while ((temp_size <<= 1) <= workgroup_size);
                 workgroup_size = temp_size >> 1;
 
-                execute_units_[0].global_work_size = {static_cast<uint32_t>(UP_DIV(output_dims[1], 4) * output_dims[3] * workgroup_size),
-                                                      static_cast<uint32_t>(output_dims[0] * output_dims[2])};
+                execute_units_[0].global_work_size = {
+                    static_cast<uint32_t>(UP_DIV(DimsFunctionUtils::GetDim(output_dims, 1), 4) *
+                                                 DimsFunctionUtils::GetDim(output_dims, 3) * workgroup_size),
+                    static_cast<uint32_t>(DimsFunctionUtils::GetDim(output_dims, 0) *
+                                          DimsFunctionUtils::GetDim(output_dims, 2))};
             } else {
-                execute_units_[0].global_work_size = {static_cast<uint32_t>(UP_DIV(output_dims[1], 4) * output_dims[3]),
-                                                      static_cast<uint32_t>(output_dims[0] * output_dims[2])};
+                execute_units_[0].global_work_size = {static_cast<uint32_t>(UP_DIV(DimsFunctionUtils::GetDim(output_dims, 1), 4) * DimsFunctionUtils::GetDim(output_dims, 3)),
+                                                      static_cast<uint32_t>(DimsFunctionUtils::GetDim(output_dims, 0) * DimsFunctionUtils::GetDim(output_dims, 2))};
             }
         } else if (is_channel_blocking_) {
             execute_units_[0].global_work_size = {
-                static_cast<uint32_t>(UP_DIV(output_dims[1], 8) * UP_DIV(output_dims[3], 4)),
-                static_cast<uint32_t>(output_dims[0] * output_dims[2])};
+                static_cast<uint32_t>(UP_DIV(DimsFunctionUtils::GetDim(output_dims, 1), 8) *
+                                      UP_DIV(DimsFunctionUtils::GetDim(output_dims, 3), 4)),
+                static_cast<uint32_t>(DimsFunctionUtils::GetDim(output_dims, 0) *
+                                      DimsFunctionUtils::GetDim(output_dims, 2))};
         } else {
             execute_units_[0].global_work_size = {
-                static_cast<uint32_t>(UP_DIV(output_dims[1], 4) * UP_DIV(output_dims[3], 4)),
-                static_cast<uint32_t>(output_dims[0] * output_dims[2])};
+                static_cast<uint32_t>(UP_DIV(DimsFunctionUtils::GetDim(output_dims, 1), 4) *
+                                      UP_DIV(DimsFunctionUtils::GetDim(output_dims, 3), 4)),
+                static_cast<uint32_t>(DimsFunctionUtils::GetDim(output_dims, 0) *
+                                      DimsFunctionUtils::GetDim(output_dims, 2))};
         }
 
         if (!run_local_work_) {
@@ -174,9 +188,9 @@ Status OpenCLConvLayer1x1Acc::Reshape(const std::vector<Blob *> &inputs, const s
         }
     }
     //input width, input height
-    int input_imageshape[2]  = {input_dims[3], input_dims[2]};
+    int input_imageshape[2]  = {DimsFunctionUtils::GetDim(input_dims, 3), DimsFunctionUtils::GetDim(input_dims, 2)};
     //output width, output height
-    int output_imageshape[2] = {output_dims[3], output_dims[2]};
+    int output_imageshape[2] = {DimsFunctionUtils::GetDim(output_dims, 3), DimsFunctionUtils::GetDim(output_dims, 2)};
     int stride_shape[2]      = {conv_params_.stride_x, conv_params_.stride_y};
     uint32_t idx             = 0;
     for (auto gws : execute_units_[0].global_work_size) {
@@ -202,13 +216,15 @@ Status OpenCLConvLayer1x1Acc::Reshape(const std::vector<Blob *> &inputs, const s
     }
     if (!width_blocking_is_1_) {
         // set value (output width / 4)
-        execute_units_[0].ocl_kernel.setArg(idx++, UP_DIV(output_dims[3], 4));
+        execute_units_[0].ocl_kernel.setArg(idx++, UP_DIV(DimsFunctionUtils::GetDim(output_dims, 3), 4));
     }
 
     if (run_local_work_) {
         execute_units_[0].ocl_kernel.setArg(idx++, UP_DIV(input_channel_blocks, workgroup_size));
         execute_units_[0].ocl_kernel.setArg(idx++, workgroup_size * 4 * type_size, nullptr);
     }
+
+    execute_units_[0].ocl_kernel.setArg(idx++, (int)conv_params_.activation_type);
 
     if (!run_local_work_ && ocl_context_->GetEnableTuneKernel()) {
         execute_units_[0].local_work_size = LocalTune(execute_units_[0], ocl_context_, GenerateTuneKernelKey(execute_units_[0]));
